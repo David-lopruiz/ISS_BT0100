@@ -1,0 +1,212 @@
+
+--------------------------- --------------------------------------------------------------------
+REGISTER SERVICE PROVIDER
+------------------------------------------------------------------------------------------------
+az provider register --namespace Microsoft.CloudShell
+az provider register --namespace Microsoft.Compute
+az provider register --namespace Microsoft.Web
+az provider register --namespace Microsoft.Storage
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.ContainerRegistry
+az provider register --namespace Microsoft.OperationalInsights
+az provider register --namespace Microsoft.ManagedIdentity
+az provider register --namespace Microsoft.Devices
+
+--------------------------- --------------------------------------------------------------------
+CHANGE SUSCRIPTION IF NECESSARY
+------------------------------------------------------------------------------------------------
+%JSon is returned, and the name field specifies the name of your subscription. The id field is the id of your subscription. To switch to the subscription you want to work on execute the command 
+az account list --output table
+az account set --subscription <use your own subscription id>
+
+--------------------------- --------------------------------------------------------------------
+VARIABLES
+------------------------------------------------------------------------------------------------
+myresourcegroup="IoTEdgeResourcesDT"
+myiothub="myiothubjdf" #Enter your initials here to ensure the name is unique (mine are jdf)
+location="spaincentral" #If this location fails, try francecentral or switzerlandnorth
+subscription=$(az account show --query id -o tsv)  # Get current subscription ID
+mydevice="myraspi"
+
+
+--------------------------- --------------------------------------------------------------------
+Troubleshooting Student Subscriptions with locations
+------------------------------------------------------------------------------------------------
+
+#Student subscriptions have certain limitations. The following script will list all the “Physical” regions available in your subscription and indicate whether they are allowed by policy (if no allowlist is found, it assumes that all regions are allowed by policy):
+
+az policy assignment list  --subscription $(az account show --query id -o tsv)  --query "[?parameters.listOfAllowedLocations.value!=null].parameters.listOfAllowedLocations.value[]"  -o tsv
+
+
+
+------------------------------------------------
+EXERCISE 1 - CREATE IOTHUB
+------------------------------------------------
+az group create --name $myresourcegroup --location $location
+# If necessary for the final assignment you can change the sku [--sku {B1, B2, B3, F1, S1, S2, S3}]
+az iot hub create --resource-group $myresourcegroup --name $myiothub --location $location --sku F1 --partition-count 2 
+
+#create a device identity into the iothub
+az iot hub device-identity create --hub-name $myiothub --device-id $mydevice
+
+#get connection string of the device identity
+az iot hub device-identity connection-string show --device-id $mydevice --hub-name $myiothub
+
+#monitor the iothub
+az iot hub monitor-events --output table --device-id $mydevice --hub-name $myiothub
+
+
+------------------------------------------------
+EXERCISE 2 - SAVE DATA TO A BLOB STORAGE
+------------------------------------------------
+
+mystorage="myiothubdemostorage"
+assignee="yesica.diaz@upm.es"
+
+#create a Storage Account 
+az storage account create \
+--name $mystorage \
+--resource-group $myresourcegroup \
+--location $location \
+--sku Standard_LRS
+   
+#create a role
+az role assignment create \
+--assignee $assignee \
+--role 'Storage Blob Data Contributor' \
+--scope /subscriptions/$subscription/resourceGroups/$myresourcegroup/providers/Microsoft.Storage/storageAccounts/$mystorage
+
+#create a Container in the Storage Account   
+az storage account update --name $mystorage --resource-group $myresourcegroup --default-action Allow
+az storage container create --account-name $mystorage --name mycontainerforiothub --auth-mode login
+
+#create a custom endpoint
+az iot hub message-endpoint create storage-container \
+  --hub-name $myiothub \
+  --endpoint-name mystorageendpoint \
+  --container mycontainerforiothub \
+  --connection-string "$(az storage account show-connection-string --name $mystorage --resource-group $myresourcegroup --query connectionString -o tsv)" \
+  --resource-group $myresourcegroup \
+  --encoding "JSON"
+
+
+#create a Message Route in IoT Hub
+#cold-path
+az iot hub message-route create --route-name mystorageroute  --hub-name $myiothub --resource-group $myresourcegroup --source-type DeviceMessages --endpoint-name mystorageendpoint --enabled true --condition 'true'
+
+#hot-path  
+az iot hub message-route create --route-name mytelemetryroute  --hub-name $myiothub --resource-group $myresourcegroup --source-type DeviceMessages --endpoint-name events --enabled true --condition 'true' 
+   
+
+   
+------------------------------------------------
+EXERCISE 3 - VISUALIZING DATA IN REAL TIME
+------------------------------------------------
+mywebapp="mywebappdemoforvisualizingdatajdf" #Enter your initials here to ensure the name is unique (mine are jdf)
+#create service plan
+az appservice plan create --name myserviceplan --resource-group $myresourcegroup --sku FREE --is-linux
+#create web application
+az webapp create -n $mywebapp -g $myresourcegroup -p myserviceplan --runtime "NODE:22-lts"
+az webapp config appsettings set -g $myresourcegroup -n $mywebapp --settings WEBSITE_NODE_DEFAULT_VERSION="~20"
+
+#add consumer group to your IoT Hub
+myconsumergroup="webconsumer"
+az iot hub consumer-group create --hub-name $myiothub --name $myconsumergroup
+
+#set IoT Hub Connection String
+az webapp config appsettings set --name $mywebapp --resource-group $myresourcegroup --settings IotHubConnectionString="$(az iot hub connection-string show --hub-name $myiothub --policy-name service --output tsv)"
+
+#set Event Hub Consumer Group
+az webapp config appsettings set --name $mywebapp --resource-group $myresourcegroup --settings EventHubConsumerGroup=$myconsumergroup
+
+#enable sockets
+az webapp config set --name $mywebapp --resource-group $myresourcegroup --web-sockets-enabled true
+#enable https
+az webapp update --name $mywebapp --resource-group $myresourcegroup --https-only true
+
+
+------------------------------------------------
+EXERCISE 4 - VISUALIZING DATA IN POWERBI
+------------------------------------------------
+*******************
+ az login --scope https://management.core.windows.net//.default
+*******************
+
+mystreamanalytics="mystreamanalyticsdemo"
+# create a stream analytics job
+az stream-analytics job create \
+  --name $mystreamanalytics \
+  --resource-group $myresourcegroup \
+  --location $location
+
+#add consumer group to your IoT Hub
+az iot hub consumer-group create --hub-name $myiothub --name asaconsumer
+
+
+
+SELECT
+    *
+INTO
+    [output]
+FROM
+    [input]
+
+------------------------------------------------
+EXERCISES EDGE - IOTEDGE v1.5
+------------------------------------------------
+
+--------------------------- --------------------------------------------------------------------
+VARIABLES
+------------------------------------------------------------------------------------------------
+myresourcegroupVM1="IoTEdgeResourcesVM1"
+myiothub="myIoTHubTutorialfree" #The same you used in previous exercises
+location="spaincentral" #If this location fails, try francecentral or switzerlandnorth
+
+#device identity and device (VM)
+myedgedevice1="edgedeviceidentityjdiaz1" #Enter your initials here to ensure the name is unique (mine are jdf)
+az iot hub device-identity create --hub-name $myiothub --device-id $myedgedevice1 --edge-enabled
+
+#create a new resource group for the VM
+az group create --name $myresourcegroupVM1 --location $location
+
+#create a VM using a template
+#change the password due to security issues
+az deployment group create \
+--resource-group $myresourcegroupVM1 \
+--template-uri "https://raw.githubusercontent.com/ETSISI-CCforIoT/iotedge-vm-deploy/refs/heads/main/edgeDeploy.json" \
+--parameters dnsLabelPrefix=$myedgedevice1 \
+--parameters adminUsername='azureuser' \
+--parameters deviceConnectionString=$(az iot hub device-identity connection-string show --device-id $myedgedevice1 --hub-name $myiothub -o tsv) \
+--parameters authenticationType='password' \
+--parameters adminPasswordOrKey="YOURPASSWORD"
+
+
+ssh azureuser@$myedgedevice1.$location.cloudapp.azure.com
+
+container registry
+------------------------------------------------
+#create a azure container registry (acr)
+myacrname="myacrfordemosjdf" #Enter your initials here to ensure the name is unique (mine are jdf) and use only lowercase letters
+az acr create \
+  --resource-group $myresourcegroup \
+  --name $myacrname \
+  --sku Basic \
+  --location $location
+ 
+CI&CD ENV VARIABLES
+------------------------------------------------ 
+CONTAINER_REGISTRY_ADDRESS=myacrfordemosjdf.azurecr.io
+CONTAINER_REGISTRY_USERNAME=myacrfordemosjdf
+CONTAINER_REGISTRY_PASSWORD=<PASTE HERE YOUR PASSWORD>
+MODULE_NAME=mymodule
+MODULE_VERSION=0.0.1-amd64
+
+SSH VM
+------------------------------------------------ 
+sudo iotedge list
+sudo iotedge logs -f mymodule
+
+#monitor the iothub
+az iot hub monitor-events --output table --device-id $myedgedevice1 --hub-name $myiothub
+
+az group delete -n $myresourcegroupVM1 --yes --no-wait

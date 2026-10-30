@@ -1,0 +1,246 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.9.1.41621",
+      "templateHash": "956004028010656602"
+    },
+    "description": "Versión corregida de edgeDeploy.json con cloud-init endurecido para IoT Edge en Ubuntu 22.04"
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "The location of the resources."
+      }
+    },
+    "dnsLabelPrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Unique DNS Name for the Public IP."
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "metadata": {
+        "description": "User name for the Virtual Machine."
+      }
+    },
+    "adminPasswordOrKey": {
+      "type": "securestring",
+      "metadata": {
+        "description": "SSH Key or password for the Virtual Machine. SSH key is recommended."
+      }
+    },
+    "authenticationType": {
+      "type": "string",
+      "defaultValue": "sshPublicKey",
+      "allowedValues": [
+        "sshPublicKey",
+        "password"
+      ],
+      "metadata": {
+        "description": "Type of authentication to use on the Virtual Machine."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B2s_v2",
+      "metadata": {
+        "description": "VM size"
+      }
+    },
+    "ubuntuOSVersion": {
+      "type": "string",
+      "defaultValue": "22_04-lts",
+      "metadata": {
+        "description": "The Ubuntu version for the VM."
+      }
+    },
+    "deviceConnectionString": {
+      "type": "securestring",
+      "metadata": {
+        "description": "IoT Edge Device Connection String"
+      }
+    },
+    "allowSsh": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Allow SSH traffic through the firewall"
+      }
+    }
+  },
+  "variables": {
+    "imagePublisher": "Canonical",
+    "imageOffer": "0001-com-ubuntu-server-jammy",
+    "nicName": "[format('nic-{0}', uniqueString(parameters('dnsLabelPrefix')))]",
+    "vmName": "[format('vm-{0}', uniqueString(parameters('dnsLabelPrefix')))]",
+    "vnetName": "[format('vnet-{0}', uniqueString(parameters('dnsLabelPrefix')))]",
+    "pipName": "[format('ip-{0}', parameters('dnsLabelPrefix'))]",
+    "addressPrefix": "10.0.0.0/16",
+    "subnet1Name": "[format('subnet-{0}', uniqueString(parameters('dnsLabelPrefix')))]",
+    "subnet1Prefix": "10.0.0.0/24",
+    "publicIPAddressType": "Static",
+    "vnetID": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+    "subnet1Ref": "[format('{0}/subnets/{1}', variables('vnetID'), variables('subnet1Name'))]",
+    "linuxConfiguration": {
+      "disablePasswordAuthentication": true,
+      "ssh": {
+        "publicKeys": [
+          {
+            "path": "[format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername'))]",
+            "keyData": "[parameters('adminPasswordOrKey')]"
+          }
+        ]
+      }
+    },
+    "dcs": "[parameters('deviceConnectionString')]",
+    "networkSecurityGroupName_var": "[format('nsg-{0}', uniqueString(parameters('dnsLabelPrefix')))]",
+    "sshRule": [
+      {
+        "name": "default-allow-22",
+        "properties": {
+          "priority": 1000,
+          "access": "Allow",
+          "direction": "Inbound",
+          "destinationPortRange": "22",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "*",
+          "destinationAddressPrefix": "*"
+        }
+      }
+    ],
+    "noRule": []
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2021-08-01",
+      "name": "[variables('pipName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Regional"
+      },
+      "properties": {
+        "publicIPAddressVersion": "IPv4",
+        "publicIPAllocationMethod": "[variables('publicIPAddressType')]",
+        "dnsSettings": {
+          "domainNameLabel": "[parameters('dnsLabelPrefix')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2021-08-01",
+      "name": "[variables('networkSecurityGroupName_var')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": "[if(parameters('allowSsh'), variables('sshRule'), variables('noRule'))]"
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2021-08-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[variables('addressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnet1Name')]",
+            "properties": {
+              "addressPrefix": "[variables('subnet1Prefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName_var'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName_var'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2021-08-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnet1Ref')]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('vmName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('vmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPasswordOrKey')]",
+          "customData": "[base64(concat('#cloud-config\nwrite_files:\n  - path: /etc/apt/sources.list.d/microsoft-prod.list\n    content: |\n      deb [arch=amd64] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\n  - path: /usr/local/bin/install-iotedge.sh\n    permissions: ''0755''\n    content: |\n      #!/bin/bash\n      set -eux\n      exec > >(tee -a /var/log/iotedge-install.log) 2>&1\n      echo \"[iotedge-install] Starting at $(date)\"\n      export DEBIAN_FRONTEND=noninteractive\n\n      # 1. Import Microsoft GPG key to modern keyring location\n      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n      chmod 644 /usr/share/keyrings/microsoft-prod.gpg\n\n      # 2. Overwrite repo file with signed-by clause\n      echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\" > /etc/apt/sources.list.d/microsoft-prod.list\n\n      # 3. Update apt with retries (cloud-init / unattended-upgrades may hold the lock)\n      for i in 1 2 3 4 5; do\n        if apt-get update -y; then break; fi\n        echo \"[iotedge-install] apt-get update failed, retry $i\"\n        sleep 10\n      done\n\n      # 4. Install moby (container engine) and wait for daemon\n      apt-get install -y moby-engine moby-cli\n      systemctl enable --now docker\n      for i in $(seq 1 30); do\n        if systemctl is-active --quiet docker && docker info >/dev/null 2>&1; then\n          echo \"[iotedge-install] docker is up\"\n          break\n        fi\n        echo \"[iotedge-install] waiting for docker ($i/30)\"\n        sleep 3\n      done\n\n      # 5. Install aziot-edge\n      apt-get install -y aziot-edge defender-iot-micro-agent-edge || apt-get install -y aziot-edge\n\n      # 6. Provision with device connection string if provided\n      DCS=\"',variables('dcs'),'\"\n      if [ -n \"$DCS\" ]; then\n        iotedge config mp --connection-string \"$DCS\" --force\n        iotedge config apply\n      fi\n\n      echo \"[iotedge-install] Finished at $(date)\"\n      iotedge system status || true\n      iotedge check || true\nruncmd:\n  - [ bash, -lc, \"/usr/local/bin/install-iotedge.sh >> /var/log/iotedge-install.log 2>&1\" ]\n'))]",
+          "linuxConfiguration": "[if(equals(parameters('authenticationType'), 'password'), json('null'), variables('linuxConfiguration'))]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('imagePublisher')]",
+            "offer": "[variables('imageOffer')]",
+            "sku": "[parameters('ubuntuOSVersion')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "Public_SSH": {
+      "type": "string",
+      "value": "[format('ssh {0}@{1}', reference(resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))).osProfile.adminUsername, reference(resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))).dnsSettings.fqdn)]"
+    }
+  }
+}
